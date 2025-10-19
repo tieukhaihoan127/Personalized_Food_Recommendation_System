@@ -10,7 +10,7 @@ from Content_based_Filtering_model import load_and_prepare_data, build_similarit
 # =======================
 st.set_page_config(
     page_title="TasteMatch",
-    page_icon="logo.jpg",
+    page_icon="logo.svg",
     layout="wide"
 )
 
