@@ -93,7 +93,6 @@ def get_recommendations(name, cosine_sim, X, top_n=5):
     return recommendations
 
 
-
 def load_data():
     X = load_and_prepare_data("./restaurants.json")
     cosine_sim = build_similarity_model(X)
