@@ -1,16 +1,18 @@
 # app.py
+import itertools
+
 import streamlit as st
 import json
 import pandas as pd
 import matplotlib.pyplot as plt
-from Content_based_Filtering_model import load_and_prepare_data, build_similarity_model, recommend_similar_places
+from Content_based_Filtering_model import load_and_prepare_data, build_similarity_model,get_recommendations
 
 # =======================
 # Cấu hình Streamlit
 # =======================
 st.set_page_config(
     page_title="TasteMatch",
-    page_icon="logo.svg",
+    page_icon="logo.jpg",
     layout="wide"
 )
 
@@ -20,7 +22,7 @@ st.set_page_config(
 @st.cache_data
 def load_data():
     X = load_and_prepare_data("./restaurants.json")
-    tfidf, cosine_sim = build_similarity_model(X)
+    cosine_sim = build_similarity_model(X)
     return X, cosine_sim
 
 X, cosine_sim = load_data()
@@ -44,8 +46,17 @@ def custom_sort(name: str):
 restaurants = ['--- Chọn quán yêu thích ---'] + list(X['name'].unique())
 districts = ['--- Chọn quận ---'] + sorted(X[X['district'].notna() & (X['district'].str.strip() != '')]['district'].unique(), key=custom_sort)
 
+resCategories = X['food_categories']
+all_items = list(itertools.chain.from_iterable(resCategories))
+
+# lấy danh sách các giá trị duy nhất
+categories = list(set(all_items))
+
+food_categories = ['--- Chọn món yêu thích ---'] + sorted(list(categories))
+
 st.sidebar.image("logo.svg")
 selected_district = st.sidebar.selectbox("Choose your District", districts, index=0)
+selected_category = st.sidebar.selectbox("Choose your favorite food", food_categories, index=0)
 selected_restaurant = st.sidebar.selectbox("Choose your favorite Restaurant", restaurants, index=0)
 
 # =======================
@@ -74,21 +85,38 @@ if show_stats:
 # =======================
 # Hiển thị gợi ý
 # =======================
+# Thêm debug code để kiểm tra
 if st.sidebar.button("Show recommendations"):
-    if selected_restaurant == "--- Chọn quán yêu thích ---":
-        st.subheader(f"Dưới đây là những quán có địa chỉ tại {selected_district}")
-        res_in_selected_dis = X[X['district'] == selected_district]
-        res_in_selected_dis = res_in_selected_dis[['name', 'address', 'category', 'food_categories', 'style']]
-        st.dataframe(res_in_selected_dis.reset_index(drop=True))
-        # st.warning("⚠️ Vui lòng chọn một quán yêu thích trước.")
-    else:
-        st.subheader(f"🍽️ Gợi ý quán tương tự với **{selected_restaurant}**")
-        recommendations = recommend_similar_places(X, cosine_sim, selected_restaurant, top_n=10)
+    # TH1: Người dùng chọn món yêu thích
+    if selected_category != "--- Chọn món yêu thích ---":
+        st.subheader(f"🍜 Các quán có món: **{selected_category}**")
 
+        # Cách 1: Nếu food_categories là list
+        res_list_have_selected_category = X[
+            X['food_categories'].apply(
+                lambda lst: selected_category in lst if isinstance(lst, list) else False
+            )
+        ]
+
+        # Cách 2: Nếu food_categories là string (dự phòng)
+        if res_list_have_selected_category.empty:
+            res_list_have_selected_category = X[
+                X['food_categories'].astype(str).str.contains(selected_category, case=False, na=False)
+            ]
+
+        # Lọc thêm theo quận nếu có
         if selected_district != "--- Chọn quận ---":
-            recommendations = recommendations[recommendations['district'] == selected_district]
+            res_list_have_selected_category = res_list_have_selected_category[
+                res_list_have_selected_category['district'] == selected_district
+                ]
 
-        if recommendations.empty:
-            st.info("Không tìm thấy quán tương tự trong quận này.")
+        # Hiển thị kết quả
+        if res_list_have_selected_category.empty:
+            st.info(f"❌ Không tìm thấy quán có món **{selected_category}**" +
+                    (f" tại **{selected_district}**" if selected_district != "--- Chọn quận ---" else ""))
+
         else:
-            st.dataframe(recommendations.reset_index(drop=True))
+            st.success(f"✅ Tìm thấy {len(res_list_have_selected_category)} quán")
+            res_list_have_selected_category = res_list_have_selected_category.sort_values("average_rating", ascending=False)
+            st.dataframe(
+                res_list_have_selected_category[['name', 'address', 'district', 'food_categories','average_rating']].reset_index(drop=True))
