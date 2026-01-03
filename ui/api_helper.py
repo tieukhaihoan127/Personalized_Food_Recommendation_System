@@ -3,12 +3,9 @@ from typing import List, Dict, Optional
 
 API_BASE_URL = "http://localhost:5000/api"
 
-class APIHelper:
-    """Helper class for API interactions"""
-    
+class APIHelper:    
     @staticmethod
     def get_all_restaurants(district: Optional[str] = None, category: Optional[str] = None) -> List[Dict]:
-        """Get all restaurants with optional filters"""
         try:
             params = {}
             if district:
@@ -25,7 +22,6 @@ class APIHelper:
     
     @staticmethod
     def get_restaurant_by_id(restaurant_id: int) -> Optional[Dict]:
-        """Get single restaurant by ID"""
         try:
             response = requests.get(f"{API_BASE_URL}/restaurants/{restaurant_id}", timeout=10)
             response.raise_for_status()
@@ -36,7 +32,6 @@ class APIHelper:
     
     @staticmethod
     def get_restaurant_reviews(restaurant_id: int) -> List[Dict]:
-        """Get all reviews for a restaurant"""
         try:
             response = requests.get(f"{API_BASE_URL}/restaurants/{restaurant_id}/reviews", timeout=10)
             response.raise_for_status()
@@ -48,7 +43,6 @@ class APIHelper:
     
     @staticmethod
     def add_review(user_id: str, username: str, review_text: str, rating: float, res_id: int) -> bool:
-        """Add a new review"""
         try:
             data = {
                 'user_id': user_id,
@@ -67,7 +61,6 @@ class APIHelper:
     
     @staticmethod
     def get_user_preferences(user_id: str) -> Dict:
-        """Get user preferences"""
         try:
             response = requests.get(f"{API_BASE_URL}/users/{user_id}/preferences", timeout=10)
             response.raise_for_status()
@@ -86,7 +79,6 @@ class APIHelper:
     
     @staticmethod
     def update_user_preferences(user_id: str, preferences: Dict) -> bool:
-        """Update user preferences"""
         try:
             response = requests.put(
                 f"{API_BASE_URL}/users/{user_id}/preferences",
@@ -101,7 +93,6 @@ class APIHelper:
     
     @staticmethod
     def get_hybrid_recommendations(user_id: str, top_k: int = 12) -> List[Dict]:
-        """Get hybrid recommendations for user"""
         try:
             data = {
                 'user_id': user_id,
@@ -122,7 +113,6 @@ class APIHelper:
     
     @staticmethod
     def add_to_history(user_id: str, res_id: int, action: str = 'viewed') -> bool:
-        """Add restaurant to user history"""
         try:
             data = {
                 'user_id': user_id,
@@ -141,35 +131,26 @@ class APIHelper:
             print(f"Error adding to history: {e}")
             return False
 
-# Convenience functions
 def get_restaurants(**kwargs):
-    """Shortcut to get restaurants"""
     return APIHelper.get_all_restaurants(**kwargs)
 
 def get_restaurant(restaurant_id):
-    """Shortcut to get single restaurant"""
     return APIHelper.get_restaurant_by_id(restaurant_id)
 
 def get_reviews(restaurant_id):
-    """Shortcut to get reviews"""
     return APIHelper.get_restaurant_reviews(restaurant_id)
 
 def add_review(**kwargs):
-    """Shortcut to add review"""
     return APIHelper.add_review(**kwargs)
 
 def get_user_prefs(user_id):
-    """Shortcut to get user preferences"""
     return APIHelper.get_user_preferences(user_id)
 
 def update_user_prefs(user_id, preferences):
-    """Shortcut to update user preferences"""
     return APIHelper.update_user_preferences(user_id, preferences)
 
 def get_recommendations(user_id, top_k=12):
-    """Shortcut to get recommendations"""
     return APIHelper.get_hybrid_recommendations(user_id, top_k)
 
 def add_to_history(user_id, res_id, action='viewed'):
-    """Shortcut to add to history"""
     return APIHelper.add_to_history(user_id, res_id, action)

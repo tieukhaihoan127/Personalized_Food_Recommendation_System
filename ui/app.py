@@ -5,18 +5,12 @@ import re
 import pydeck as pdk
 from api_helper import get_restaurants
 
-# =======================
-# Page config
-# =======================
 st.set_page_config(
     page_title="TasteMatch",
     page_icon="🍜",
     layout="wide"
 )
 
-# =======================
-# Utils
-# =======================
 def district_sort_key(name):
     if name.startswith("Quận"):
         match = re.search(r"\d+", name)
@@ -27,7 +21,6 @@ def district_sort_key(name):
     return (1, name)
 
 def parse_json_field(value):
-    """Parse JSON string field"""
     if isinstance(value, str):
         try:
             import json
@@ -36,12 +29,8 @@ def parse_json_field(value):
             return []
     return value if value else []
 
-# =======================
-# Load data from API
-# =======================
-@st.cache_data(ttl=300)  # Cache 5 minutes
+@st.cache_data(ttl=300)  
 def load_data_from_api():
-    """Load all restaurants from API"""
     restaurants = get_restaurants()
     if not restaurants:
         st.error("⚠️ Không thể kết nối với API. Vui lòng đảm bảo Flask server đang chạy!")
@@ -50,7 +39,6 @@ def load_data_from_api():
     
     df = pd.DataFrame(restaurants)
     
-    # Parse JSON fields
     if 'food_categories' in df.columns:
         df['food_categories'] = df['food_categories'].apply(parse_json_field)
     if 'style' in df.columns:
@@ -58,22 +46,16 @@ def load_data_from_api():
     
     return df
 
-# Load data
 with st.spinner("🔄 Đang tải dữ liệu từ API..."):
     df = load_data_from_api()
 
-# =======================
-# Sidebar – Filters
-# =======================
 st.sidebar.header("🔍 Bộ lọc")
 
-# Get unique districts
 districts = ["Tất cả"] + sorted(
     df[df["district"].notna()]["district"].unique().tolist(),
     key=district_sort_key
 )
 
-# Get all categories from food_categories
 all_categories = set()
 for cats in df['food_categories']:
     if isinstance(cats, list):
@@ -83,14 +65,10 @@ categories = ["Tất cả"] + sorted(list(all_categories))
 selected_district = st.sidebar.selectbox("Quận", districts)
 selected_category = st.sidebar.selectbox("Loại món", categories)
 
-# Refresh button
 if st.sidebar.button("🔄 Làm mới dữ liệu"):
     st.cache_data.clear()
     st.rerun()
 
-# =======================
-# Filter data
-# =======================
 filtered_df = df.copy()
 
 if selected_district != "Tất cả":
@@ -103,12 +81,8 @@ if selected_category != "Tất cả":
         )
     ]
 
-# =======================
-# MAIN UI
-# =======================
 st.title("🗺️ Khám phá địa điểm ăn uống")
 
-# Stats
 col1, col2, col3 = st.columns(3)
 with col1:
     st.metric("Tổng số quán", len(df))
@@ -118,9 +92,6 @@ with col3:
     avg_rating = filtered_df['average_rating'].mean() if not filtered_df.empty else 0
     st.metric("Đánh giá TB", f"{avg_rating:.1f}/10")
 
-# =======================
-# MAP
-# =======================
 st.subheader("📍 Bản đồ quán ăn")
 
 map_df = filtered_df.dropna(subset=["latitude", "longitude"]).copy()
@@ -166,24 +137,18 @@ if not map_df.empty:
 else:
     st.info("📍 Không có quán nào có tọa độ")
 
-# =======================
-# LIST VIEW
-# =======================
 st.subheader("📋 Danh sách địa điểm")
 
 if filtered_df.empty:
     st.warning("Không tìm thấy quán nào phù hợp với bộ lọc")
 else:
-    # Prepare display data
     display_df = filtered_df.copy()
     
-    # Format food_categories for display
     if 'food_categories' in display_df.columns:
         display_df['food_categories_str'] = display_df['food_categories'].apply(
             lambda x: ", ".join(x[:3]) if isinstance(x, list) else ""
         )
-    
-    # Select columns to display
+
     preferred_cols = [
         "name",
         "district",
@@ -196,8 +161,7 @@ else:
     ]
     
     display_cols = [col for col in preferred_cols if col in display_df.columns]
-    
-    # Rename columns for better display
+
     column_names = {
         "name": "Tên quán",
         "district": "Quận",
@@ -217,8 +181,5 @@ else:
         hide_index=True
     )
 
-# =======================
-# FOOTER
-# =======================
 st.write("---")
 st.caption("🔌 Powered by TasteMatch API | 📊 Data loaded from Flask API")

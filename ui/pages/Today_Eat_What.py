@@ -4,7 +4,6 @@ import re
 import sys
 import os
 
-# Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from api_helper import (
@@ -21,18 +20,12 @@ st.set_page_config(
     layout="wide"
 )
 
-# ----------------------
-# SESSION STATE
-# ----------------------
 if 'user_id' not in st.session_state:
     st.session_state.user_id = 'current_user'
 
 if 'user_preferences' not in st.session_state:
     st.session_state.user_preferences = None
 
-# ----------------------
-# HELPER FUNCTIONS
-# ----------------------
 def district_sort_key(name):
     if name.startswith("Quận"):
         match = re.search(r"\d+", name)
@@ -52,13 +45,12 @@ def parse_json_field(value):
             return []
     return value if value else []
 
-@st.cache_data(ttl=300)  # Cache 5 minutes
+@st.cache_data(ttl=300)
 def load_all_restaurants():
     """Load all restaurants from API"""
     restaurants = get_restaurants()
     if restaurants:
         df = pd.DataFrame(restaurants)
-        # Parse JSON fields
         if 'food_categories' in df.columns:
             df['food_categories'] = df['food_categories'].apply(parse_json_field)
         return df
@@ -78,9 +70,6 @@ def save_user_preferences(prefs):
         st.session_state.user_preferences = prefs
     return success
 
-# ----------------------
-# LOAD DATA
-# ----------------------
 full_df = load_all_restaurants()
 
 if full_df.empty:
@@ -90,25 +79,19 @@ if full_df.empty:
 
 user_prefs = load_user_preferences()
 
-# ----------------------
-# SIDEBAR - User Preferences
-# ----------------------
 st.sidebar.header("⚙️ Tùy chọn của bạn")
 
-# Get all categories
 all_categories = set()
 for cats in full_df['food_categories']:
     if isinstance(cats, list):
         all_categories.update(cats)
 all_categories = sorted(list(all_categories))
 
-# Get all districts
 all_districts = sorted(
     full_df['district'].dropna().unique().tolist(),
     key=district_sort_key
 )
 
-# Categories preference
 selected_categories = st.sidebar.multiselect(
     "🍜 Món ăn yêu thích",
     options=all_categories,
@@ -116,7 +99,6 @@ selected_categories = st.sidebar.multiselect(
     help="Chọn các loại món bạn thích"
 )
 
-# Districts preference
 selected_districts = st.sidebar.multiselect(
     "📍 Khu vực quan tâm",
     options=all_districts,
@@ -124,18 +106,6 @@ selected_districts = st.sidebar.multiselect(
     help="Chọn các quận bạn muốn tìm quán"
 )
 
-# Price range
-# price_range = st.sidebar.slider(
-#     "💰 Khoảng giá mong muốn (VNĐ)",
-#     min_value=0,
-#     max_value=500000,
-#     value=(
-#         user_prefs.get("price_range", [0, 500000])[0],
-#         user_prefs.get("price_range", [0, 500000])[1]
-#     ),
-#     step=10000,
-#     format="%d đ"
-# )
 saved_price_range = user_prefs.get("price_range", [0, 500000])
 
 price_range = st.sidebar.slider(
@@ -150,7 +120,6 @@ price_range = st.sidebar.slider(
     format="%d đ"
 )
 
-# Save preferences button
 if st.sidebar.button("💾 Lưu sở thích", type="primary", use_container_width=True):
     new_prefs = {
         'favorite_categories': selected_categories,
@@ -167,7 +136,6 @@ if st.sidebar.button("💾 Lưu sở thích", type="primary", use_container_widt
     else:
         st.sidebar.error("❌ Lỗi khi lưu. Vui lòng thử lại!")
 
-# Stats
 st.sidebar.write("---")
 st.sidebar.write("📊 **Thống kê của bạn:**")
 
@@ -176,7 +144,6 @@ st.sidebar.metric("Quán đã xem", len(current_prefs.get("viewed_restaurants", 
 st.sidebar.metric("Quán yêu thích", len(current_prefs.get("liked_restaurants", [])))
 st.sidebar.metric("Đánh giá", current_prefs.get("total_reviews", 0))
 
-# Show liked restaurants
 if current_prefs.get("liked_restaurants"):
     with st.sidebar.expander("❤️ Quán đã thích"):
         for res_id in current_prefs["liked_restaurants"]:
@@ -184,43 +151,29 @@ if current_prefs.get("liked_restaurants"):
             if not matching.empty:
                 st.write(f"• {matching.iloc[0]['name']}")
 
-# Refresh button
 if st.sidebar.button("🔄 Làm mới", use_container_width=True):
     st.cache_data.clear()
     st.session_state.user_preferences = None
     st.rerun()
 
-# ----------------------
-# MAIN UI
-# ----------------------
 st.title("🍽️ Hôm nay ăn gì?")
 st.caption("Khám phá những gợi ý cá nhân hóa dành riêng cho bạn")
 
-# ----------------------
-# PAGINATION STATE
-# ----------------------
 if 'current_page' not in st.session_state:
     st.session_state.current_page = 1
 
 ITEMS_PER_PAGE = 12
 
-# ----------------------
-# GET RECOMMENDATIONS
-# ----------------------
-# Initialize
 all_recommendations = []
 with st.spinner("🔍 Đang tìm kiếm gợi ý cho bạn..."):
     all_recommendations = get_recommendations(st.session_state.user_id, top_k=48)
 
-# Calculate pagination
 total_items = len(all_recommendations)
 total_pages = max(1, (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
 
-# Validate current page
 if st.session_state.current_page > total_pages:
     st.session_state.current_page = total_pages
 
-# Get items for current page
 if all_recommendations:
     start_idx = (st.session_state.current_page - 1) * ITEMS_PER_PAGE
     end_idx = start_idx + ITEMS_PER_PAGE
@@ -228,9 +181,7 @@ if all_recommendations:
 else:
     recommendations = []
     start_idx = 0
-# ----------------------
-# DISPLAY RECOMMENDATIONS
-# ----------------------
+
 if not recommendations:
     st.info("""
     👋 Chào mừng bạn đến với TasteMatch!
@@ -241,14 +192,11 @@ if not recommendations:
     3. Hoặc **like** và **đánh giá** một vài quán để hệ thống hiểu sở thích của bạn
     """)
 else:
-    # Show model info
     col_title, col_info = st.columns([3, 1])
     with col_title:
         st.subheader(f"🎯 {total_items} gợi ý dành cho bạn")
     with col_info:
         st.success("🤖 Hybrid Model")
-
-    # Display in grid
     for i in range(0, len(recommendations), 3):
         cols = st.columns(3)
 
@@ -258,35 +206,29 @@ else:
 
                 with cols[j]:
                     with st.container(border=True):
-                        # Image
                         st.image(
                             rec.get('image') or "https://images.unsplash.com/photo-1555992336-cbfad6d9c7b0",
                             use_container_width=True
                         )
 
-                        # Restaurant name
                         st.markdown(f"### {rec['name']}")
 
-                        # Rating
                         rating = rec.get('average_rating', 0)
                         stars = "⭐" * int(rating)
                         st.write(f"{stars} {rating}/10")
 
-                        # Info
                         st.write(f"📍 {rec.get('district', 'N/A')}")
 
                         price_min = rec.get('average_price_min', 0)
                         price_max = rec.get('avarage_price_max', 0)
                         st.write(f"💰 {int(price_min):,}đ - {int(price_max):,}đ")
 
-                        # Categories
                         food_cats = parse_json_field(rec.get('food_categories', '[]'))
 
                         if food_cats:
                             categories_str = ", ".join(food_cats[:3])
                             st.caption(f"🍜 {categories_str}")
 
-                        # Recommendation score
                         score = rec.get('recommendation_score', 0)
                         cf_score = rec.get('cf_score', 0)
                         cb_score = rec.get('cb_score', 0)
@@ -300,7 +242,6 @@ else:
 
                         st.info(reason)
 
-                        # Actions
                         col_btn1, col_btn2 = st.columns(2)
 
                         rest_id = int(rec['id'])
@@ -308,10 +249,7 @@ else:
 
                         with col_btn1:
                             if st.button("👁️ Xem", key=f"view_{rest_id}_{i}_{j}", use_container_width=True):
-                                # Add to history
                                 add_to_history(st.session_state.user_id, rest_id, 'viewed')
-
-                                # Navigate to detail page
                                 st.session_state.selected_restaurant = rest_name
                                 st.switch_page("pages/Detail_Place.py")
 
@@ -326,7 +264,6 @@ else:
                                 disabled=is_liked
                             ):
                                 if not is_liked:
-                                    # Add to liked via API
                                     success = add_to_history(st.session_state.user_id, rest_id, 'liked')
 
                                     if success:
@@ -335,9 +272,6 @@ else:
                                         st.rerun()
                                     else:
                                         st.error("❌ Lỗi khi lưu. Vui lòng thử lại!")
-    # ----------------------
-    # PAGINATION CONTROLS
-    # ----------------------
     st.write("---")
 
     col_info, col_prev, col_next = st.columns([1, 1, 1])
@@ -355,9 +289,6 @@ else:
             st.session_state.current_page += 1
             st.rerun()
 
-# ----------------------
-# TIPS
-# ----------------------
 st.write("---")
 st.subheader("💡 Mẹo để có gợi ý tốt hơn")
 

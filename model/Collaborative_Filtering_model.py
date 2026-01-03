@@ -5,12 +5,13 @@ from scipy.sparse import csr_matrix
 import json
 import os
 
+
 def load_user_ratings():
     ratings_data = []
 
-    if os.path.exists("./data/reviews.json"):
+    if os.path.exists("./data/restaurant_comments.json"):
         try:
-            with open("./data/reviews.json", 'r', encoding='utf-8') as f:
+            with open("./data/restaurant_comments.json", 'r', encoding='utf-8') as f:
                 reviews = json.load(f)
 
             for review in reviews:
