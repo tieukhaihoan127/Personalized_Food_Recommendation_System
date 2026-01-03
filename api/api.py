@@ -793,20 +793,36 @@ def parse_json_field(field_value):
 
 def extract_keywords_from_comment(comment_text, restaurant_categories=None):
     """Extract food categories and districts from comment"""
+    if not comment_text:
+        return [], []
+    
     comment_lower = comment_text.lower()
     detected_categories = set()
     detected_districts = set()
     
+    # Ensure restaurant_categories is a list
+    if restaurant_categories is None:
+        restaurant_categories = []
+    elif not isinstance(restaurant_categories, list):
+        restaurant_categories = []
+    
+    # Detect food categories
     for keyword, potential_categories in FOOD_KEYWORDS.items():
         if keyword in comment_lower:
             if restaurant_categories:
+                # Match với categories của restaurant
                 for cat in potential_categories:
                     for rest_cat in restaurant_categories:
-                        if cat.lower() in rest_cat.lower() or rest_cat.lower() in cat.lower():
-                            detected_categories.add(rest_cat)
+                        try:
+                            if cat.lower() in rest_cat.lower() or rest_cat.lower() in cat.lower():
+                                detected_categories.add(rest_cat)
+                        except (AttributeError, TypeError):
+                            continue
             else:
+                # Không có restaurant categories → thêm trực tiếp
                 detected_categories.update(potential_categories)
     
+    # Detect districts
     for keyword, district in DISTRICT_KEYWORDS.items():
         if keyword in comment_lower:
             detected_districts.add(district)
@@ -1038,33 +1054,56 @@ class Reviews(Resource):
     def post(self):
         data = request.get_json()
         required_fields = ['user_id', 'username', 'review_text', 'rating', 'res_id']
+        
         for field in required_fields:
             if field not in data:
                 abort(400, message=f"Missing required field: {field}")
         
-        review = ReviewModel(
-            user_id=data['user_id'],
-            username=data['username'],
-            review_text=data['review_text'],
-            rating=data['rating'],
-            res_id=data['res_id'],
-            timestamp=datetime.now().strftime("%d/%m/%Y %H:%M"),
-            source='user'
-        )
-        
-        db.session.add(review)
-        db.session.commit()
-        
-        # Update preferences
-        update_user_preferences(data['user_id'], data['rating'], data['res_id'], data['review_text'])
-        
-        return marshal(review, reviewFields), 201
+        try:
+            review = ReviewModel(
+                user_id=data['user_id'],
+                username=data['username'],
+                review_text=data['review_text'],
+                rating=data['rating'],
+                res_id=data['res_id'],
+                timestamp=datetime.now().strftime("%d/%m/%Y %H:%M"),
+                source='user'
+            )
+            
+            db.session.add(review)
+            db.session.commit()
+            
+            # Update preferences - wrap in try/except
+            try:
+                update_user_preferences(
+                    data['user_id'], 
+                    data['rating'], 
+                    data['res_id'], 
+                    data['review_text']
+                )
+            except Exception as pref_error:
+                print(f"Warning: Error updating preferences: {pref_error}")
+                # Review đã được lưu, chỉ log warning
+            
+            return marshal(review, reviewFields), 201
+            
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error creating review: {e}")
+            abort(500, message=f"Error creating review: {str(e)}")
 
 def update_user_preferences(user_id, rating, res_id, review_text):
     """Update user preferences based on review"""
+    print(f"\n=== UPDATE PREFERENCES DEBUG ===")
+    print(f"User ID: {user_id}")
+    print(f"Rating: {rating}")
+    print(f"Restaurant ID: {res_id}")
+    print(f"Review text: {review_text[:50]}...")
+    
     pref = UserPreferenceModel.query.filter_by(user_id=user_id).first()
     
     if not pref:
+        print("Creating new preference record")
         pref = UserPreferenceModel(
             user_id=user_id,
             total_reviews=0,
@@ -1076,41 +1115,80 @@ def update_user_preferences(user_id, rating, res_id, review_text):
         )
         db.session.add(pref)
     
+    # Update average rating
     total = pref.total_reviews
     pref.avg_rating_given = ((pref.avg_rating_given * total) + rating) / (total + 1)
     pref.total_reviews += 1
     
+    print(f"Total reviews: {pref.total_reviews}")
+    print(f"Avg rating: {pref.avg_rating_given}")
+    
     restaurant = RestaurantModel.query.get(res_id)
     if restaurant:
         rest_categories = parse_json_field(restaurant.food_categories)
-        detected_categories, detected_districts = extract_keywords_from_comment(review_text, rest_categories)
+        print(f"Restaurant categories: {rest_categories}")
         
+        detected_categories, detected_districts = extract_keywords_from_comment(
+            review_text, 
+            rest_categories
+        )
+        print(f"Detected categories: {detected_categories}")
+        print(f"Detected districts: {detected_districts}")
+        
+        # Update preferred_categories
         existing_cats = parse_json_field(pref.preferred_categories)
+        print(f"Existing categories: {existing_cats}")
+        
         if rating >= 7:
+            print(f"Rating >= 7, adding restaurant categories")
             for cat in rest_categories:
                 if cat not in existing_cats:
                     existing_cats.append(cat)
+                    print(f"  Added: {cat}")
+        
         for cat in detected_categories:
             if cat not in existing_cats:
                 existing_cats.append(cat)
-        pref.preferred_categories = json.dumps(existing_cats, ensure_ascii=False)
+                print(f"  Added detected: {cat}")
         
+        pref.preferred_categories = json.dumps(existing_cats, ensure_ascii=False)
+        print(f"Final categories: {existing_cats}")
+        
+        # Update preferred_districts
         existing_districts = parse_json_field(pref.preferred_districts)
+        print(f"Existing districts: {existing_districts}")
+        
         if rating >= 8 and restaurant.district:
+            print(f"Rating >= 8, adding restaurant district: {restaurant.district}")
             if restaurant.district not in existing_districts:
                 existing_districts.append(restaurant.district)
+        
         for district in detected_districts:
             if district not in existing_districts:
                 existing_districts.append(district)
-        pref.preferred_districts = json.dumps(existing_districts, ensure_ascii=False)
+                print(f"  Added detected: {district}")
         
+        pref.preferred_districts = json.dumps(existing_districts, ensure_ascii=False)
+        print(f"Final districts: {existing_districts}")
+        
+        # Add to liked_restaurants
         if rating >= 8:
+            print(f"Rating >= 8, adding to liked")
             liked = parse_json_field(pref.liked_restaurants)
             if res_id not in liked:
                 liked.append(res_id)
+                print(f"  Added restaurant {res_id} to liked")
             pref.liked_restaurants = json.dumps(liked)
     
-    db.session.commit()
+    try:
+        db.session.commit()
+        print("✅ Preferences updated successfully")
+    except Exception as e:
+        print(f"❌ Error committing: {e}")
+        db.session.rollback()
+        raise
+    
+    print("=== END DEBUG ===\n")
 
 class RestaurantReviews(Resource):
     def get(self, res_id):

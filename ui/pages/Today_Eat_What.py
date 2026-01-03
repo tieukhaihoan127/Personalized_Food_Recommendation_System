@@ -125,13 +125,26 @@ selected_districts = st.sidebar.multiselect(
 )
 
 # Price range
+# price_range = st.sidebar.slider(
+#     "💰 Khoảng giá mong muốn (VNĐ)",
+#     min_value=0,
+#     max_value=500000,
+#     value=(
+#         user_prefs.get("price_range", [0, 500000])[0],
+#         user_prefs.get("price_range", [0, 500000])[1]
+#     ),
+#     step=10000,
+#     format="%d đ"
+# )
+saved_price_range = user_prefs.get("price_range", [0, 500000])
+
 price_range = st.sidebar.slider(
     "💰 Khoảng giá mong muốn (VNĐ)",
     min_value=0,
     max_value=500000,
     value=(
-        user_prefs.get("price_range", [0, 500000])[0],
-        user_prefs.get("price_range", [0, 500000])[1]
+        int(saved_price_range[0]),
+        int(saved_price_range[1])
     ),
     step=10000,
     format="%d đ"
@@ -146,7 +159,7 @@ if st.sidebar.button("💾 Lưu sở thích", type="primary", use_container_widt
         'liked_restaurants': user_prefs.get('liked_restaurants', []),
         'viewed_restaurants': user_prefs.get('viewed_restaurants', [])
     }
-    
+
     if save_user_preferences(new_prefs):
         st.sidebar.success("✅ Đã lưu sở thích!")
         st.cache_data.clear()
@@ -184,11 +197,37 @@ st.title("🍽️ Hôm nay ăn gì?")
 st.caption("Khám phá những gợi ý cá nhân hóa dành riêng cho bạn")
 
 # ----------------------
+# PAGINATION STATE
+# ----------------------
+if 'current_page' not in st.session_state:
+    st.session_state.current_page = 1
+
+ITEMS_PER_PAGE = 12
+
+# ----------------------
 # GET RECOMMENDATIONS
 # ----------------------
+# Initialize
+all_recommendations = []
 with st.spinner("🔍 Đang tìm kiếm gợi ý cho bạn..."):
-    recommendations = get_recommendations(st.session_state.user_id, top_k=12)
+    all_recommendations = get_recommendations(st.session_state.user_id, top_k=48)
 
+# Calculate pagination
+total_items = len(all_recommendations)
+total_pages = max(1, (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+
+# Validate current page
+if st.session_state.current_page > total_pages:
+    st.session_state.current_page = total_pages
+
+# Get items for current page
+if all_recommendations:
+    start_idx = (st.session_state.current_page - 1) * ITEMS_PER_PAGE
+    end_idx = start_idx + ITEMS_PER_PAGE
+    recommendations = all_recommendations[start_idx:end_idx]
+else:
+    recommendations = []
+    start_idx = 0
 # ----------------------
 # DISPLAY RECOMMENDATIONS
 # ----------------------
@@ -205,7 +244,7 @@ else:
     # Show model info
     col_title, col_info = st.columns([3, 1])
     with col_title:
-        st.subheader(f"🎯 {len(recommendations)} gợi ý dành cho bạn")
+        st.subheader(f"🎯 {total_items} gợi ý dành cho bạn")
     with col_info:
         st.success("🤖 Hybrid Model")
 
@@ -235,14 +274,14 @@ else:
 
                         # Info
                         st.write(f"📍 {rec.get('district', 'N/A')}")
-                        
+
                         price_min = rec.get('average_price_min', 0)
                         price_max = rec.get('avarage_price_max', 0)
                         st.write(f"💰 {int(price_min):,}đ - {int(price_max):,}đ")
 
                         # Categories
                         food_cats = parse_json_field(rec.get('food_categories', '[]'))
-                        
+
                         if food_cats:
                             categories_str = ", ".join(food_cats[:3])
                             st.caption(f"🍜 {categories_str}")
@@ -251,14 +290,14 @@ else:
                         score = rec.get('recommendation_score', 0)
                         cf_score = rec.get('cf_score', 0)
                         cb_score = rec.get('cb_score', 0)
-                        
+
                         if cf_score > 0 and cb_score > 0:
                             reason = f"💡 Hybrid: {score:.2f}"
                         elif cf_score > 0:
                             reason = f"👥 Collaborative: {score:.2f}"
                         else:
                             reason = f"🎯 Content-Based: {score:.2f}"
-                        
+
                         st.info(reason)
 
                         # Actions
@@ -271,7 +310,7 @@ else:
                             if st.button("👁️ Xem", key=f"view_{rest_id}_{i}_{j}", use_container_width=True):
                                 # Add to history
                                 add_to_history(st.session_state.user_id, rest_id, 'viewed')
-                                
+
                                 # Navigate to detail page
                                 st.session_state.selected_restaurant = rest_name
                                 st.switch_page("pages/Detail_Place.py")
@@ -289,13 +328,32 @@ else:
                                 if not is_liked:
                                     # Add to liked via API
                                     success = add_to_history(st.session_state.user_id, rest_id, 'liked')
-                                    
+
                                     if success:
                                         st.cache_data.clear()
                                         st.session_state.user_preferences = None
                                         st.rerun()
                                     else:
                                         st.error("❌ Lỗi khi lưu. Vui lòng thử lại!")
+    # ----------------------
+    # PAGINATION CONTROLS
+    # ----------------------
+    st.write("---")
+
+    col_info, col_prev, col_next = st.columns([1, 1, 1])
+
+    with col_info:
+        st.write(f"**Trang {st.session_state.current_page} / {total_pages}**")
+
+    with col_prev:
+        if st.button("⬅️ Trang trước", use_container_width=True, disabled=(st.session_state.current_page <= 1)):
+            st.session_state.current_page -= 1
+            st.rerun()
+
+    with col_next:
+        if st.button("Trang sau ➡️", use_container_width=True, disabled=(st.session_state.current_page >= total_pages)):
+            st.session_state.current_page += 1
+            st.rerun()
 
 # ----------------------
 # TIPS
