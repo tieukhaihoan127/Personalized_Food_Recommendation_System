@@ -2,13 +2,8 @@ import streamlit as st
 import pandas as pd
 import itertools
 import re
-import json
 import pydeck as pdk
-import sys
-import os
-
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.append(ROOT_DIR)
+from api_helper import get_restaurants
 
 # =======================
 # Page config
@@ -31,35 +26,67 @@ def district_sort_key(name):
             return (0, 999)
     return (1, name)
 
-# =======================
-# Load data
-# =======================
-@st.cache_data
-def load_data():
-    with open("./data/restaurants.json", "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return pd.DataFrame(data)
+def parse_json_field(value):
+    """Parse JSON string field"""
+    if isinstance(value, str):
+        try:
+            import json
+            return json.loads(value)
+        except:
+            return []
+    return value if value else []
 
-df = load_data()
+# =======================
+# Load data from API
+# =======================
+@st.cache_data(ttl=300)  # Cache 5 minutes
+def load_data_from_api():
+    """Load all restaurants from API"""
+    restaurants = get_restaurants()
+    if not restaurants:
+        st.error("⚠️ Không thể kết nối với API. Vui lòng đảm bảo Flask server đang chạy!")
+        st.info("Chạy lệnh: `cd api && python app.py`")
+        st.stop()
+    
+    df = pd.DataFrame(restaurants)
+    
+    # Parse JSON fields
+    if 'food_categories' in df.columns:
+        df['food_categories'] = df['food_categories'].apply(parse_json_field)
+    if 'style' in df.columns:
+        df['style'] = df['style'].apply(parse_json_field)
+    
+    return df
+
+# Load data
+with st.spinner("🔄 Đang tải dữ liệu từ API..."):
+    df = load_data_from_api()
 
 # =======================
 # Sidebar – Filters
 # =======================
 st.sidebar.header("🔍 Bộ lọc")
 
+# Get unique districts
 districts = ["Tất cả"] + sorted(
     df[df["district"].notna()]["district"].unique().tolist(),
     key=district_sort_key
 )
 
-# flatten food_categories
-all_categories = list(
-    set(itertools.chain.from_iterable(df["food_categories"]))
-)
-categories = ["Tất cả"] + sorted(all_categories)
+# Get all categories from food_categories
+all_categories = set()
+for cats in df['food_categories']:
+    if isinstance(cats, list):
+        all_categories.update(cats)
+categories = ["Tất cả"] + sorted(list(all_categories))
 
 selected_district = st.sidebar.selectbox("Quận", districts)
 selected_category = st.sidebar.selectbox("Loại món", categories)
+
+# Refresh button
+if st.sidebar.button("🔄 Làm mới dữ liệu"):
+    st.cache_data.clear()
+    st.rerun()
 
 # =======================
 # Filter data
@@ -67,14 +94,12 @@ selected_category = st.sidebar.selectbox("Loại món", categories)
 filtered_df = df.copy()
 
 if selected_district != "Tất cả":
-    filtered_df = filtered_df[
-        filtered_df["district"] == selected_district
-    ]
+    filtered_df = filtered_df[filtered_df["district"] == selected_district]
 
 if selected_category != "Tất cả":
     filtered_df = filtered_df[
         filtered_df["food_categories"].apply(
-            lambda x: selected_category in x
+            lambda x: selected_category in x if isinstance(x, list) else False
         )
     ]
 
@@ -82,17 +107,25 @@ if selected_category != "Tất cả":
 # MAIN UI
 # =======================
 st.title("🗺️ Khám phá địa điểm ăn uống")
+
+# Stats
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Tổng số quán", len(df))
+with col2:
+    st.metric("Quán đang hiển thị", len(filtered_df))
+with col3:
+    avg_rating = filtered_df['average_rating'].mean() if not filtered_df.empty else 0
+    st.metric("Đánh giá TB", f"{avg_rating:.1f}/10")
+
 # =======================
 # MAP
 # =======================
 st.subheader("📍 Bản đồ quán ăn")
 
-map_df = filtered_df.dropna(
-    subset=["latitude", "longitude"]
-).copy()
+map_df = filtered_df.dropna(subset=["latitude", "longitude"]).copy()
 
 if not map_df.empty:
-
     scatter_layer = pdk.Layer(
         "ScatterplotLayer",
         data=map_df,
@@ -130,7 +163,6 @@ if not map_df.empty:
     )
 
     st.pydeck_chart(deck, use_container_width=True)
-
 else:
     st.info("📍 Không có quán nào có tọa độ")
 
@@ -139,22 +171,54 @@ else:
 # =======================
 st.subheader("📋 Danh sách địa điểm")
 
-# Các cột muốn hiển thị (ưu tiên)
-preferred_cols = [
-    "name",
-    "district",
-    "address",
-    "category",
-    "style",
-    "average_rating",
-    "average_price_min",
-    "avarage_price_max"
-]
+if filtered_df.empty:
+    st.warning("Không tìm thấy quán nào phù hợp với bộ lọc")
+else:
+    # Prepare display data
+    display_df = filtered_df.copy()
+    
+    # Format food_categories for display
+    if 'food_categories' in display_df.columns:
+        display_df['food_categories_str'] = display_df['food_categories'].apply(
+            lambda x: ", ".join(x[:3]) if isinstance(x, list) else ""
+        )
+    
+    # Select columns to display
+    preferred_cols = [
+        "name",
+        "district",
+        "address",
+        "category",
+        "food_categories_str",
+        "average_rating",
+        "average_price_min",
+        "avarage_price_max"
+    ]
+    
+    display_cols = [col for col in preferred_cols if col in display_df.columns]
+    
+    # Rename columns for better display
+    column_names = {
+        "name": "Tên quán",
+        "district": "Quận",
+        "address": "Địa chỉ",
+        "category": "Loại hình",
+        "food_categories_str": "Món ăn",
+        "average_rating": "Đánh giá",
+        "average_price_min": "Giá min (đ)",
+        "avarage_price_max": "Giá max (đ)"
+    }
+    
+    display_data = display_df[display_cols].rename(columns=column_names)
+    
+    st.dataframe(
+        display_data.reset_index(drop=True),
+        use_container_width=True,
+        hide_index=True
+    )
 
-# Chỉ lấy các cột thực sự tồn tại
-display_cols = [col for col in preferred_cols if col in filtered_df.columns]
-
-st.dataframe(
-    filtered_df[display_cols].reset_index(drop=True),
-    use_container_width=True
-)
+# =======================
+# FOOTER
+# =======================
+st.write("---")
+st.caption("🔌 Powered by TasteMatch API | 📊 Data loaded from Flask API")

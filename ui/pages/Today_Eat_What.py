@@ -1,23 +1,19 @@
 import streamlit as st
 import pandas as pd
-import json
-import os
-import time
 import re
-from datetime import datetime
 import sys
 import os
 
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.append(ROOT_DIR)
+# Add parent directory to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from model.Content_based_Filtering_model import (
-    load_and_prepare_data,
-    build_similarity_model,
-    recommend_restaurants
+from api_helper import (
+    get_restaurants,
+    get_user_prefs,
+    update_user_prefs,
+    get_recommendations,
+    add_to_history
 )
-from model.Collaborative_Filtering_model import load_cf_model
-from comment_analyzer import update_user_preferences, get_analysis_summary
 
 st.set_page_config(
     page_title="Hôm nay ăn gì?",
@@ -25,36 +21,18 @@ st.set_page_config(
     layout="wide"
 )
 
+# ----------------------
+# SESSION STATE
+# ----------------------
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = 'current_user'
+
+if 'user_preferences' not in st.session_state:
+    st.session_state.user_preferences = None
 
 # ----------------------
-# LOAD DATA & MODEL
+# HELPER FUNCTIONS
 # ----------------------
-@st.cache_data
-def load_data():
-    X = load_and_prepare_data("./data/restaurants.json")
-    cosine_sim = build_similarity_model(X)
-    return X, cosine_sim
-
-
-@st.cache_resource
-def load_cf():
-    """Load Collaborative Filtering model"""
-    cf_model = load_cf_model()
-    return cf_model
-
-
-@st.cache_data
-def load_full_data():
-    """Load file JSON gốc để có đầy đủ thông tin"""
-    with open("./data/restaurants.json", 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    return pd.DataFrame(data)
-
-
-X, cosine_sim = load_data()
-cf_model = load_cf()
-full_df = load_full_data()
-
 def district_sort_key(name):
     if name.startswith("Quận"):
         match = re.search(r"\d+", name)
@@ -64,297 +42,52 @@ def district_sort_key(name):
             return (0, 999)
     return (1, name)
 
-# ----------------------
-# USER PREFERENCE FUNCTIONS
-# ----------------------
-USER_PREFS_FILE = "./data/user_preferences.json"
+def parse_json_field(value):
+    """Parse JSON string field"""
+    if isinstance(value, str):
+        try:
+            import json
+            return json.loads(value)
+        except:
+            return []
+    return value if value else []
 
-# Initialize session state for preferences
-if 'user_preferences' not in st.session_state:
-    st.session_state.user_preferences = None
-
+@st.cache_data(ttl=300)  # Cache 5 minutes
+def load_all_restaurants():
+    """Load all restaurants from API"""
+    restaurants = get_restaurants()
+    if restaurants:
+        df = pd.DataFrame(restaurants)
+        # Parse JSON fields
+        if 'food_categories' in df.columns:
+            df['food_categories'] = df['food_categories'].apply(parse_json_field)
+        return df
+    return pd.DataFrame()
 
 def load_user_preferences():
-    """Load preferences từ file hoặc session state"""
-
-    # Ưu tiên session state (trong memory)
-    if st.session_state.user_preferences is not None:
-        return st.session_state.user_preferences
-
-    # Nếu không có, load từ file
-    if not os.path.exists(USER_PREFS_FILE):
-        default_prefs = {
-            "favorite_categories": [],
-            "favorite_districts": [],
-            "price_range": [0, 500000],
-            "viewed_restaurants": [],
-            "liked_restaurants": []
-        }
-        st.session_state.user_preferences = default_prefs
-        return default_prefs
-
-    try:
-        with open(USER_PREFS_FILE, 'r', encoding='utf-8') as f:
-            prefs = json.load(f)
-            st.session_state.user_preferences = prefs
-            return prefs
-    except:
-        default_prefs = {
-            "favorite_categories": [],
-            "favorite_districts": [],
-            "price_range": [0, 500000],
-            "viewed_restaurants": [],
-            "liked_restaurants": []
-        }
-        st.session_state.user_preferences = default_prefs
-        return default_prefs
-
+    """Load user preferences from API"""
+    if st.session_state.user_preferences is None:
+        prefs = get_user_prefs(st.session_state.user_id)
+        st.session_state.user_preferences = prefs
+    return st.session_state.user_preferences
 
 def save_user_preferences(prefs):
-    """Lưu preferences với dual storage: session state + file"""
-
-    # Convert tất cả int64 sang int trước khi lưu
-    def convert_to_native_types(obj):
-        """Convert numpy/pandas types sang native Python types"""
-        if isinstance(obj, dict):
-            return {k: convert_to_native_types(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [convert_to_native_types(item) for item in obj]
-        elif hasattr(obj, 'item'):  # numpy types
-            return obj.item()
-        else:
-            return obj
-
-    prefs = convert_to_native_types(prefs)
-
-    # 1. Lưu vào session state (LUÔN THÀNH CÔNG)
-    st.session_state.user_preferences = prefs
-
-    # 2. Thử lưu vào file (không bắt buộc)
-    try:
-        # Kiểm tra thư mục tồn tại
-        directory = os.path.dirname(USER_PREFS_FILE) or '.'
-        if not os.path.exists(directory):
-            os.makedirs(directory)
-
-        # Thử ghi file
-        with open(USER_PREFS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(prefs, f, ensure_ascii=False, indent=2)
-
-        return True
-
-    except Exception as e:
-        # Silent fail - session state vẫn work
-        return True
-
-
-def add_to_history(restaurant_id, action="viewed"):
-    """Thêm quán vào lịch sử"""
-    prefs = load_user_preferences()
-
-    # Convert sang int chuẩn (tránh int64 từ pandas)
-    restaurant_id = int(restaurant_id)
-
-    if action == "viewed":
-        if restaurant_id not in prefs["viewed_restaurants"]:
-            prefs["viewed_restaurants"].append(restaurant_id)
-            # Giữ tối đa 50 quán gần nhất
-            prefs["viewed_restaurants"] = prefs["viewed_restaurants"][-50:]
-
-    elif action == "liked":
-        if restaurant_id not in prefs["liked_restaurants"]:
-            prefs["liked_restaurants"].append(restaurant_id)
-            # Đồng thời xóa khỏi viewed nếu có
-            if restaurant_id in prefs["viewed_restaurants"]:
-                prefs["viewed_restaurants"].remove(restaurant_id)
-
-    return save_user_preferences(prefs)
-
+    """Save user preferences via API"""
+    success = update_user_prefs(st.session_state.user_id, prefs)
+    if success:
+        st.session_state.user_preferences = prefs
+    return success
 
 # ----------------------
-# HYBRID RECOMMENDATION ENGINE
+# LOAD DATA
 # ----------------------
-def get_hybrid_recommendations(user_prefs, X, full_df, cosine_sim, cf_model, n=12, cf_weight=0.4, cb_weight=0.6):
-    """
-    Hybrid Recommendation: 40% CF + 60% CB
-    Ưu tiên quán ở các quận trong favorite_districts
-    """
-    hybrid_scores = {}
+full_df = load_all_restaurants()
 
-    # ==================
-    # 1. GET CF RECOMMENDATIONS (40%)
-    # ==================
-    if cf_model.is_trained:
-        cf_recs = cf_model.get_recommendations('current_user', n=n * 2)
+if full_df.empty:
+    st.error("⚠️ Không thể kết nối với API. Vui lòng đảm bảo Flask server đang chạy tại http://localhost:5000")
+    st.info("Chạy lệnh: `cd api && python app.py`")
+    st.stop()
 
-        # Normalize CF scores to 0-1
-        if cf_recs:
-            max_cf_score = max([score for _, score in cf_recs])
-            min_cf_score = min([score for _, score in cf_recs])
-
-            if max_cf_score > min_cf_score:
-                for res_id, score in cf_recs:
-                    normalized_score = (score - min_cf_score) / (max_cf_score - min_cf_score)
-                    hybrid_scores[res_id] = {
-                        'cf_score': normalized_score * cf_weight,
-                        'cb_score': 0,
-                        'reason_cf': 'Dựa trên sở thích người dùng tương tự',
-                        'type': 'cf'
-                    }
-
-    # ==================
-    # 2. GET CB RECOMMENDATIONS (60%)
-    # ==================
-    cb_candidates = []
-
-    # Strategy A: Content-Based từ quán đã thích
-    if user_prefs["liked_restaurants"]:
-        for rest_id in user_prefs["liked_restaurants"][-3:]:
-            if rest_id in X.index:
-                similar = recommend_restaurants(rest_id, X, cosine_sim, n=10)
-                for idx in similar:
-                    if idx not in user_prefs["viewed_restaurants"]:
-                        cb_candidates.append({
-                            'id': idx,
-                            'score': 0.95,
-                            'reason': f"Tương tự quán bạn đã thích"
-                        })
-
-    # Strategy B: Filter theo sở thích + ƯU TIÊN QUẬN
-    if user_prefs["favorite_categories"]:
-        filtered_df = full_df[
-            full_df['food_categories'].apply(
-                lambda cats: any(cat in user_prefs["favorite_categories"] for cat in cats)
-            )
-        ]
-
-        # Ưu tiên quán ở favorite_districts trước
-        if user_prefs["favorite_districts"]:
-            # Quán ở quận yêu thích
-            priority_df = filtered_df[filtered_df['district'].isin(user_prefs["favorite_districts"])]
-
-            for idx, row in priority_df.head(15).iterrows():
-                if idx not in user_prefs["viewed_restaurants"]:
-                    matched_cats = [cat for cat in row['food_categories']
-                                    if cat in user_prefs["favorite_categories"]]
-                    cb_candidates.append({
-                        'id': idx,
-                        'score': 0.90,  # Score cao hơn vì ở quận yêu thích
-                        'reason': f"Phù hợp: {', '.join(matched_cats[:2])} tại {row['district']}"
-                    })
-
-            # Quán ở quận khác (điểm thấp hơn)
-            other_df = filtered_df[~filtered_df['district'].isin(user_prefs["favorite_districts"])]
-            for idx, row in other_df.head(10).iterrows():
-                if idx not in user_prefs["viewed_restaurants"]:
-                    matched_cats = [cat for cat in row['food_categories']
-                                    if cat in user_prefs["favorite_categories"]]
-                    cb_candidates.append({
-                        'id': idx,
-                        'score': 0.75,  # Score thấp hơn
-                        'reason': f"Phù hợp: {', '.join(matched_cats[:2])}"
-                    })
-        else:
-            # Không có district preference → xử lý bình thường
-            for idx, row in filtered_df.head(15).iterrows():
-                if idx not in user_prefs["viewed_restaurants"]:
-                    matched_cats = [cat for cat in row['food_categories']
-                                    if cat in user_prefs["favorite_categories"]]
-                    cb_candidates.append({
-                        'id': idx,
-                        'score': 0.85,
-                        'reason': f"Phù hợp với sở thích: {', '.join(matched_cats[:2])}"
-                    })
-
-    # Strategy C: Filter theo QUẬN trước (nếu có)
-    if user_prefs["favorite_districts"]:
-        district_df = full_df[full_df['district'].isin(user_prefs["favorite_districts"])]
-
-        # Lấy top rated ở quận yêu thích
-        top_in_district = district_df.nlargest(10, 'average_rating')
-        for idx, row in top_in_district.iterrows():
-            if idx not in user_prefs["viewed_restaurants"]:
-                cb_candidates.append({
-                    'id': idx,
-                    'score': 0.80,  # Score cao vì ở quận yêu thích
-                    'reason': f"Đánh giá cao tại {row['district']} ({row['average_rating']}/10)"
-                })
-
-    # Strategy D: Top rated (điểm thấp nhất)
-    top_rated = full_df.nlargest(15, 'average_rating')
-    for idx, row in top_rated.iterrows():
-        if idx not in user_prefs["viewed_restaurants"]:
-            cb_candidates.append({
-                'id': idx,
-                'score': 0.70,
-                'reason': f"Đánh giá cao ({row['average_rating']}/10)"
-            })
-
-    # Normalize CB scores
-    for candidate in cb_candidates:
-        res_id = candidate['id']
-        if res_id in hybrid_scores:
-            # Cộng điểm CB vào
-            hybrid_scores[res_id]['cb_score'] = candidate['score'] * cb_weight
-            hybrid_scores[res_id]['reason_cb'] = candidate['reason']
-            hybrid_scores[res_id]['type'] = 'hybrid'
-        else:
-            # Chỉ có CB
-            hybrid_scores[res_id] = {
-                'cf_score': 0,
-                'cb_score': candidate['score'] * cb_weight,
-                'reason_cb': candidate['reason'],
-                'type': 'cb'
-            }
-
-    # ==================
-    # 3. CALCULATE HYBRID SCORES
-    # ==================
-    recommendations = []
-
-    for res_id, scores in hybrid_scores.items():
-        if res_id not in full_df.index:
-            continue
-
-        restaurant = full_df.loc[res_id]
-
-        # Tính tổng điểm
-        total_score = scores['cf_score'] + scores['cb_score']
-
-        # BONUS: Thêm điểm nếu quán ở favorite_districts
-        if user_prefs["favorite_districts"] and restaurant['district'] in user_prefs["favorite_districts"]:
-            total_score += 0.1  # Bonus 10%
-
-        # Tạo reason message
-        if scores['type'] == 'hybrid':
-            reason = f"🤖 Hybrid: {scores.get('reason_cb', '')} & {scores.get('reason_cf', '')}"
-        elif scores['type'] == 'cf':
-            reason = f"👥 CF: {scores.get('reason_cf', '')}"
-        else:
-            reason = f"🎯 CB: {scores.get('reason_cb', '')}"
-
-        recommendations.append({
-            'restaurant': restaurant,
-            'reason': reason,
-            'score': total_score,
-            'cf_score': scores['cf_score'],
-            'cb_score': scores['cb_score'],
-            'type': scores['type']
-        })
-
-    # Sort theo hybrid score (bao gồm bonus)
-    recommendations.sort(key=lambda x: x['score'], reverse=True)
-
-    return recommendations[:n]
-
-
-# ----------------------
-# MAIN UI
-# ----------------------
-st.title("🍽️ Hôm nay ăn gì?")
-st.caption("Khám phá những gợi ý cá nhân hóa dành riêng cho bạn")
-
-# Load user preferences
 user_prefs = load_user_preferences()
 
 # ----------------------
@@ -362,21 +95,32 @@ user_prefs = load_user_preferences()
 # ----------------------
 st.sidebar.header("⚙️ Tùy chọn của bạn")
 
+# Get all categories
+all_categories = set()
+for cats in full_df['food_categories']:
+    if isinstance(cats, list):
+        all_categories.update(cats)
+all_categories = sorted(list(all_categories))
+
+# Get all districts
+all_districts = sorted(
+    full_df['district'].dropna().unique().tolist(),
+    key=district_sort_key
+)
+
 # Categories preference
-all_categories = list(set([cat for cats in X['food_categories'] for cat in cats]))
 selected_categories = st.sidebar.multiselect(
     "🍜 Món ăn yêu thích",
-    options=sorted(all_categories),
-    default=user_prefs["favorite_categories"],
+    options=all_categories,
+    default=user_prefs.get("favorite_categories", []),
     help="Chọn các loại món bạn thích"
 )
 
 # Districts preference
-all_districts = sorted(X['district'].unique().tolist(), key=district_sort_key)
 selected_districts = st.sidebar.multiselect(
     "📍 Khu vực quan tâm",
     options=all_districts,
-    default=user_prefs["favorite_districts"],
+    default=user_prefs.get("favorite_districts", []),
     help="Chọn các quận bạn muốn tìm quán"
 )
 
@@ -385,91 +129,65 @@ price_range = st.sidebar.slider(
     "💰 Khoảng giá mong muốn (VNĐ)",
     min_value=0,
     max_value=500000,
-    value=(user_prefs["price_range"][0], user_prefs["price_range"][1]),
+    value=(
+        user_prefs.get("price_range", [0, 500000])[0],
+        user_prefs.get("price_range", [0, 500000])[1]
+    ),
     step=10000,
     format="%d đ"
 )
 
 # Save preferences button
 if st.sidebar.button("💾 Lưu sở thích", type="primary", use_container_width=True):
-    user_prefs["favorite_categories"] = selected_categories
-    user_prefs["favorite_districts"] = selected_districts
-    user_prefs["price_range"] = list(price_range)
-
-    if save_user_preferences(user_prefs):
+    new_prefs = {
+        'favorite_categories': selected_categories,
+        'favorite_districts': selected_districts,
+        'price_range': list(price_range),
+        'liked_restaurants': user_prefs.get('liked_restaurants', []),
+        'viewed_restaurants': user_prefs.get('viewed_restaurants', [])
+    }
+    
+    if save_user_preferences(new_prefs):
         st.sidebar.success("✅ Đã lưu sở thích!")
+        st.cache_data.clear()
         st.rerun()
-
-# # Auto-analyze comments button
-# st.sidebar.write("---")
-# if st.sidebar.button("🤖 Phân tích Comments tự động", use_container_width=True):
-#     with st.sidebar.spinner("Đang phân tích..."):
-#         try:
-#             updated_prefs, all_user_prefs = update_user_preferences()
-#
-#             st.sidebar.success("✅ Phân tích thành công!")
-#
-#             # Show summary
-#             with st.sidebar.expander("📊 Kết quả phân tích"):
-#                 st.write(f"**Categories mới:** {len(updated_prefs['favorite_categories'])}")
-#                 st.write(f"**Districts mới:** {len(updated_prefs['favorite_districts'])}")
-#                 st.write(f"**Liked restaurants:** {len(updated_prefs['liked_restaurants'])}")
-#
-#             # Clear cache và reload
-#             st.cache_data.clear()
-#             st.cache_resource.clear()
-#             time.sleep(1)
-#             st.rerun()
-#
-#         except Exception as e:
-#             st.sidebar.error(f"❌ Lỗi: {str(e)}")
-#
-# # Debug info ở sidebar (có thể ẩn khi production)
-# if st.sidebar.checkbox("🔧 Hiển thị thông tin kỹ thuật", value=False):
-#     with st.sidebar.expander("Debug Info"):
-#         st.write("**File paths:**")
-#         st.code(f"USER_PREFS_FILE: {os.path.abspath(USER_PREFS_FILE)}")
-#         st.write(f"File exists: {os.path.exists(USER_PREFS_FILE)}")
-#
-#         if os.path.exists(USER_PREFS_FILE):
-#             st.write(f"File size: {os.path.getsize(USER_PREFS_FILE)} bytes")
-#
-#         st.write(f"Current dir: {os.getcwd()}")
+    else:
+        st.sidebar.error("❌ Lỗi khi lưu. Vui lòng thử lại!")
 
 # Stats
 st.sidebar.write("---")
 st.sidebar.write("📊 **Thống kê của bạn:**")
 
-# Reload prefs để hiển thị realtime
 current_prefs = load_user_preferences()
 st.sidebar.metric("Quán đã xem", len(current_prefs.get("viewed_restaurants", [])))
 st.sidebar.metric("Quán yêu thích", len(current_prefs.get("liked_restaurants", [])))
-
-# Debug button
-if st.sidebar.button("🔄 Refresh Stats"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.rerun()
+st.sidebar.metric("Đánh giá", current_prefs.get("total_reviews", 0))
 
 # Show liked restaurants
 if current_prefs.get("liked_restaurants"):
     with st.sidebar.expander("❤️ Quán đã thích"):
         for res_id in current_prefs["liked_restaurants"]:
-            try:
-                matching = full_df[full_df['id'] == res_id]
-                if not matching.empty:
-                    restaurant_name = matching.iloc[0]['name']
-                    st.write(f"• {restaurant_name}")
-            except:
-                pass
+            matching = full_df[full_df['id'] == res_id]
+            if not matching.empty:
+                st.write(f"• {matching.iloc[0]['name']}")
+
+# Refresh button
+if st.sidebar.button("🔄 Làm mới", use_container_width=True):
+    st.cache_data.clear()
+    st.session_state.user_preferences = None
+    st.rerun()
+
+# ----------------------
+# MAIN UI
+# ----------------------
+st.title("🍽️ Hôm nay ăn gì?")
+st.caption("Khám phá những gợi ý cá nhân hóa dành riêng cho bạn")
 
 # ----------------------
 # GET RECOMMENDATIONS
 # ----------------------
 with st.spinner("🔍 Đang tìm kiếm gợi ý cho bạn..."):
-    recommendations = get_hybrid_recommendations(
-        user_prefs, X, full_df, cosine_sim, cf_model, n=12
-    )
+    recommendations = get_recommendations(st.session_state.user_id, top_k=12)
 
 # ----------------------
 # DISPLAY RECOMMENDATIONS
@@ -481,7 +199,7 @@ if not recommendations:
     Để nhận được gợi ý cá nhân hóa, hãy:
     1. Chọn **món ăn yêu thích** ở sidebar
     2. Chọn **khu vực** bạn muốn tìm quán
-    3. Hoặc **like** một vài quán để hệ thống hiểu sở thích của bạn
+    3. Hoặc **like** và **đánh giá** một vài quán để hệ thống hiểu sở thích của bạn
     """)
 else:
     # Show model info
@@ -489,10 +207,7 @@ else:
     with col_title:
         st.subheader(f"🎯 {len(recommendations)} gợi ý dành cho bạn")
     with col_info:
-        if cf_model.is_trained:
-            st.success("🤖 Hybrid: 40% CF + 60% CB")
-        else:
-            st.info("🎯 Content-Based Only")
+        st.success("🤖 Hybrid Model")
 
     # Display in grid
     for i in range(0, len(recommendations), 3):
@@ -501,61 +216,83 @@ else:
         for j in range(3):
             if i + j < len(recommendations):
                 rec = recommendations[i + j]
-                restaurant = rec['restaurant']
 
                 with cols[j]:
                     with st.container(border=True):
                         # Image
                         st.image(
-                            "https://images.unsplash.com/photo-1555992336-cbfad6d9c7b0",
+                            rec.get('image') or "https://images.unsplash.com/photo-1555992336-cbfad6d9c7b0",
                             use_container_width=True
                         )
 
                         # Restaurant name
-                        st.markdown(f"### {restaurant['name']}")
+                        st.markdown(f"### {rec['name']}")
 
                         # Rating
-                        stars = "⭐" * int(restaurant['average_rating'])
-                        st.write(f"{stars} {restaurant['average_rating']}/10")
+                        rating = rec.get('average_rating', 0)
+                        stars = "⭐" * int(rating)
+                        st.write(f"{stars} {rating}/10")
 
                         # Info
-                        st.write(f"📍 {restaurant['district']}")
-                        st.write(
-                            f"💰 {int(restaurant['average_price_min']):,}đ - {int(restaurant['avarage_price_max']):,}đ")
+                        st.write(f"📍 {rec.get('district', 'N/A')}")
+                        
+                        price_min = rec.get('average_price_min', 0)
+                        price_max = rec.get('avarage_price_max', 0)
+                        st.write(f"💰 {int(price_min):,}đ - {int(price_max):,}đ")
 
                         # Categories
-                        categories_str = ", ".join(restaurant['food_categories'][:3])
-                        st.caption(f"🍜 {categories_str}")
+                        food_cats = parse_json_field(rec.get('food_categories', '[]'))
+                        
+                        if food_cats:
+                            categories_str = ", ".join(food_cats[:3])
+                            st.caption(f"🍜 {categories_str}")
 
-                        # Reason
-                        st.info(f"💡 {rec['reason']}")
+                        # Recommendation score
+                        score = rec.get('recommendation_score', 0)
+                        cf_score = rec.get('cf_score', 0)
+                        cb_score = rec.get('cb_score', 0)
+                        
+                        if cf_score > 0 and cb_score > 0:
+                            reason = f"💡 Hybrid: {score:.2f}"
+                        elif cf_score > 0:
+                            reason = f"👥 Collaborative: {score:.2f}"
+                        else:
+                            reason = f"🎯 Content-Based: {score:.2f}"
+                        
+                        st.info(reason)
 
                         # Actions
                         col_btn1, col_btn2 = st.columns(2)
 
-                        # Lấy restaurant ID chính xác
-                        rest_id = int(restaurant['id'])
-                        rest_name = restaurant['name']
+                        rest_id = int(rec['id'])
+                        rest_name = rec['name']
 
                         with col_btn1:
                             if st.button("👁️ Xem", key=f"view_{rest_id}_{i}_{j}", use_container_width=True):
-                                add_to_history(rest_id, "viewed")
-                                # Lưu tên quán vào session state để trang chi tiết hiển thị
+                                # Add to history
+                                add_to_history(st.session_state.user_id, rest_id, 'viewed')
+                                
+                                # Navigate to detail page
                                 st.session_state.selected_restaurant = rest_name
-                                # Chuyển trang (cần đúng tên file)
                                 st.switch_page("pages/Detail_Place.py")
 
                         with col_btn2:
                             is_liked = rest_id in user_prefs.get("liked_restaurants", [])
                             like_label = "❤️ Đã thích" if is_liked else "🤍 Thích"
 
-                            if st.button(like_label, key=f"like_{rest_id}_{i}_{j}", use_container_width=True,
-                                         disabled=is_liked):
+                            if st.button(
+                                like_label,
+                                key=f"like_{rest_id}_{i}_{j}",
+                                use_container_width=True,
+                                disabled=is_liked
+                            ):
                                 if not is_liked:
-                                    success = add_to_history(rest_id, "liked")
+                                    # Add to liked via API
+                                    success = add_to_history(st.session_state.user_id, rest_id, 'liked')
+                                    
                                     if success:
-                                        st.cache_resource.clear()
                                         st.cache_data.clear()
+                                        st.session_state.user_preferences = None
                                         st.rerun()
                                     else:
                                         st.error("❌ Lỗi khi lưu. Vui lòng thử lại!")
@@ -578,10 +315,10 @@ with tip_cols[0]:
 
 with tip_cols[1]:
     st.info("""
-    **❤️ Like quán bạn thích**
+    **❤️ Like và đánh giá quán**
 
-    Hệ thống sẽ tìm các quán 
-    tương tự để gợi ý.
+    Hệ thống sẽ học sở thích 
+    của bạn theo thời gian.
     """)
 
 with tip_cols[2]:

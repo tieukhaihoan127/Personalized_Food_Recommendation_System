@@ -1,122 +1,73 @@
 import streamlit as st
 import pandas as pd
-import json
-from datetime import datetime
-import os
-import time as time_module
 import pydeck as pdk
+import time as time_module
+import sys
+import os
 
+# Add parent directory to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import comment analyzer
-try:
-    from comment_analyzer import update_user_preferences
-
-    ANALYZER_AVAILABLE = True
-except:
-    ANALYZER_AVAILABLE = False
+from api_helper import (
+    get_restaurants,
+    get_restaurant,
+    get_reviews,
+    add_review,
+    add_to_history
+)
 
 st.set_page_config(page_title="Chi tiết địa điểm", page_icon="📍", layout="wide")
 
+# ----------------------
+# SESSION STATE
+# ----------------------
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = 'current_user'
+
+if 'selected_restaurant' not in st.session_state:
+    st.session_state.selected_restaurant = None
+
+# ----------------------
+# HELPER FUNCTIONS
+# ----------------------
+def parse_json_field(value):
+    """Parse JSON string field"""
+    if isinstance(value, str):
+        try:
+            import json
+            return json.loads(value)
+        except:
+            return []
+    return value if value else []
 
 # ----------------------
 # LOAD DATA
 # ----------------------
-@st.cache_data
-def load_restaurants():
-    with open("./data/restaurants.json", 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    return pd.DataFrame(data)
+@st.cache_data(ttl=300)
+def load_all_restaurants():
+    """Load all restaurants from API"""
+    restaurants = get_restaurants()
+    if restaurants:
+        df = pd.DataFrame(restaurants)
+        # Parse JSON fields
+        for field in ['food_categories', 'style', 'suitable_time', 'appropriate']:
+            if field in df.columns:
+                df[field] = df[field].apply(parse_json_field)
+        return df
+    return pd.DataFrame()
 
+df = load_all_restaurants()
 
-df = load_restaurants()
-
-# ----------------------
-# COMMENT FUNCTIONS (JSON FILE)
-# ----------------------
-COMMENTS_FILE = "./data/restaurant_comments.json"
-REVIEWS_FILE = "./data/reviews.json"
-
-
-def load_all_comments():
-    """Load tất cả comments từ file JSON"""
-    if not os.path.exists(COMMENTS_FILE):
-        return {}
-
-    try:
-        with open(COMMENTS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except:
-        return {}
-
-
-def load_foody_reviews():
-    """Load reviews từ Foody"""
-    if not os.path.exists(REVIEWS_FILE):
-        return []
-
-    try:
-        with open(REVIEWS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except:
-        return []
-
-
-def save_all_comments(comments_data):
-    """Lưu tất cả comments vào file JSON"""
-    try:
-        with open(COMMENTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(comments_data, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        st.error(f"Lỗi khi lưu: {str(e)}")
-        return False
-
-
-def get_restaurant_comments(restaurant_id):
-    """Lấy comments của một quán cụ thể"""
-    all_comments = load_all_comments()
-    return all_comments.get(str(restaurant_id), [])
-
-
-def get_foody_reviews_by_restaurant(restaurant_id):
-    """Lấy reviews từ Foody cho một quán (max 10)"""
-    all_reviews = load_foody_reviews()
-    restaurant_reviews = [r for r in all_reviews if r.get('res_id') == restaurant_id]
-    return restaurant_reviews[:10]  # Giới hạn 10 reviews
-
-
-def add_comment(restaurant_id, rating, comment_text, user_name):
-    """Thêm comment mới"""
-    all_comments = load_all_comments()
-    restaurant_id_str = str(restaurant_id)
-
-    # Lấy comments hiện tại của quán
-    if restaurant_id_str not in all_comments:
-        all_comments[restaurant_id_str] = []
-
-    # Tạo comment mới
-    new_comment = {
-        'id': len(all_comments[restaurant_id_str]) + 1,
-        'rating': rating,
-        'comment': comment_text,
-        'user': user_name,
-        'timestamp': datetime.now().strftime("%d/%m/%Y %H:%M"),
-        'source': 'user'  # Đánh dấu nguồn
-    }
-
-    # Thêm vào đầu list (comment mới nhất hiển thị trước)
-    all_comments[restaurant_id_str].insert(0, new_comment)
-
-    # Lưu lại
-    return save_all_comments(all_comments)
-
+if df.empty:
+    st.error("⚠️ Không thể kết nối với API.")
+    st.stop()
 
 # ----------------------
 # SEARCH BAR
 # ----------------------
 st.title("📍 Chi tiết địa điểm")
 
-# Tạo list tên quán để autocomplete
+# Restaurant names for autocomplete
 restaurant_names = df['name'].tolist()
 
 # Search box
@@ -127,11 +78,7 @@ search_query = st.selectbox(
     placeholder="Nhập tên quán..."
 )
 
-# Session state để lưu quán được chọn
-if 'selected_restaurant' not in st.session_state:
-    st.session_state.selected_restaurant = None
-
-# Khi chọn từ search box
+# Handle search selection
 if search_query and search_query != "":
     st.session_state.selected_restaurant = search_query
 
@@ -142,7 +89,7 @@ if not st.session_state.selected_restaurant:
     st.subheader("📋 Tất cả quán ăn")
     st.caption("Chọn một quán để xem chi tiết")
 
-    # Hiển thị grid các quán
+    # Display grid
     cols = st.columns(3)
 
     for idx, row in df.iterrows():
@@ -150,16 +97,13 @@ if not st.session_state.selected_restaurant:
         with cols[col_idx]:
             with st.container(border=True):
                 st.markdown(f"### {row['name']}")
-                st.write(f"📍 {row['address']}, {row['district']}")
-                st.write(f"⭐ Đánh giá: **{row['average_rating']}/10**")
+                st.write(f"📍 {row.get('address', 'N/A')}, {row.get('district', 'N/A')}")
+                st.write(f"⭐ Đánh giá: **{row.get('average_rating', 0)}/10**")
 
-                # Hiển thị số lượng comment
-                user_comment_count = len(get_restaurant_comments(row['id']))
-                foody_review_count = len(get_foody_reviews_by_restaurant(row['id']))
-                total_count = user_comment_count + foody_review_count
-
-                if total_count > 0:
-                    st.caption(f"💬 {total_count} đánh giá")
+                # Get review count from API
+                reviews = get_reviews(row['id'])
+                if reviews:
+                    st.caption(f"💬 {len(reviews)} đánh giá")
 
                 if st.button("Xem chi tiết", key=f"btn_{idx}"):
                     st.session_state.selected_restaurant = row['name']
@@ -167,9 +111,13 @@ if not st.session_state.selected_restaurant:
 
 else:
     # ----------------------
-    # CHI TIẾT QUÁN ĂN
+    # RESTAURANT DETAIL
     # ----------------------
     restaurant = df[df['name'] == st.session_state.selected_restaurant].iloc[0]
+    rest_id = int(restaurant['id'])
+    
+    # Add to viewed history
+    add_to_history(st.session_state.user_id, rest_id, 'viewed')
 
     # Back button
     if st.button("← Quay lại danh sách"):
@@ -186,28 +134,34 @@ else:
         # BASIC INFO
         # ----------------------
         st.image(
-            "https://images.unsplash.com/photo-1555992336-cbfad6d9c7b0",
+            restaurant.get('image') or "https://images.unsplash.com/photo-1555992336-cbfad6d9c7b0",
             caption=f"Không gian {restaurant['name']}",
             use_container_width=True
         )
 
+        # Parse JSON fields
+        food_cats = parse_json_field(restaurant.get('food_categories', '[]'))
+        styles = parse_json_field(restaurant.get('style', '[]'))
+        suitable_times = parse_json_field(restaurant.get('suitable_time', '[]'))
+        appropriate = parse_json_field(restaurant.get('appropriate', '[]'))
+
         st.markdown(f"""
-        **📍 Địa chỉ:** {restaurant['address']}, {restaurant['district']}  
-        **🏙️ Thành phố:** {restaurant['city']}  
-        **⏰ Giờ mở cửa:** {restaurant['main_opening_hour']} - {restaurant['main_closing_hour']}  
-        **🍽️ Loại hình:** {restaurant['category']}  
-        **💰 Giá trung bình:** {int(restaurant['average_price_min']):,}đ - {int(restaurant['avarage_price_max']):,}đ
+        **📍 Địa chỉ:** {restaurant.get('address', 'N/A')}, {restaurant.get('district', 'N/A')}  
+        **🏙️ Thành phố:** {restaurant.get('city', 'N/A')}  
+        **⏰ Giờ mở cửa:** {restaurant.get('main_opening_hour', 'N/A')} - {restaurant.get('main_closing_hour', 'N/A')}  
+        **🍽️ Loại hình:** {restaurant.get('category', 'N/A')}  
+        **💰 Giá trung bình:** {int(restaurant.get('average_price_min', 0)):,}đ - {int(restaurant.get('avarage_price_max', 0)):,}đ
         """)
 
         # ----------------------
         # MAP 
         # ----------------------
-        if pd.notna(restaurant['latitude']) and pd.notna(restaurant['longitude']):
+        if pd.notna(restaurant.get('latitude')) and pd.notna(restaurant.get('longitude')):
             st.subheader("🗺️ Vị trí")
 
             map_df = pd.DataFrame({
                 "name": [restaurant["name"]],
-                "address": [restaurant["address"]],
+                "address": [restaurant.get("address", "")],
                 "latitude": [restaurant["latitude"]],
                 "longitude": [restaurant["longitude"]]
             })
@@ -217,7 +171,7 @@ else:
                 data=map_df,
                 get_position='[longitude, latitude]',
                 get_radius=120,
-                get_fill_color=[255, 59, 48],  # 🔴 đỏ kiểu Google Maps
+                get_fill_color=[255, 59, 48],
                 pickable=True,
                 auto_highlight=True
             )
@@ -229,10 +183,7 @@ else:
             )
 
             tooltip = {
-                "html": """
-                <b>{name}</b><br/>
-                📍 {address}
-                """,
+                "html": "<b>{name}</b><br/>📍 {address}",
                 "style": {
                     "backgroundColor": "white",
                     "color": "black",
@@ -256,23 +207,19 @@ else:
         # ----------------------
         st.subheader("⭐ Đánh giá tổng quan")
 
-        st.metric("Điểm trung bình", f"{restaurant['average_rating']}/10")
+        st.metric("Điểm trung bình", f"{restaurant.get('average_rating', 0)}/10")
 
         # Rating breakdown
         st.write("**Chi tiết đánh giá:**")
-        st.progress(restaurant['quality_rating'] / 10, text=f"Chất lượng: {restaurant['quality_rating']}/10")
-        st.progress(restaurant['service_rating'] / 10, text=f"Phục vụ: {restaurant['service_rating']}/10")
-        st.progress(restaurant['price_rating'] / 10, text=f"Giá cả: {restaurant['price_rating']}/10")
-        st.progress(restaurant['location_rating'] / 10, text=f"Vị trí: {restaurant['location_rating']}/10")
-        st.progress(restaurant['space_rating'] / 10, text=f"Không gian: {restaurant['space_rating']}/10")
+        st.progress(restaurant.get('quality_rating', 0) / 10, text=f"Chất lượng: {restaurant.get('quality_rating', 0)}/10")
+        st.progress(restaurant.get('service_rating', 0) / 10, text=f"Phục vụ: {restaurant.get('service_rating', 0)}/10")
+        st.progress(restaurant.get('price_rating', 0) / 10, text=f"Giá cả: {restaurant.get('price_rating', 0)}/10")
+        st.progress(restaurant.get('location_rating', 0) / 10, text=f"Vị trí: {restaurant.get('location_rating', 0)}/10")
+        st.progress(restaurant.get('space_rating', 0) / 10, text=f"Không gian: {restaurant.get('space_rating', 0)}/10")
 
         # Comment stats
         st.write("---")
-        st.write(f"**📝 Tổng số bình luận:** {int(restaurant['comment_quantity'])}")
-        st.write(f"✨ Tuyệt vời: {int(restaurant['marvelous_comment'])}")
-        st.write(f"👍 Tốt: {int(restaurant['good_comment'])}")
-        st.write(f"😐 Bình thường: {int(restaurant['ok_comment'])}")
-        st.write(f"👎 Tệ: {int(restaurant['awful_comment'])}")
+        st.write(f"**📝 Tổng số bình luận:** {int(restaurant.get('comment_quantity', 0))}")
 
     # ----------------------
     # ADDITIONAL INFO
@@ -283,17 +230,17 @@ else:
 
     with col3:
         st.subheader("🍜 Món ăn")
-        for food in restaurant['food_categories']:
+        for food in food_cats:
             st.write(f"• {food}")
 
     with col4:
         st.subheader("🎨 Phong cách")
-        for style in restaurant['style']:
+        for style in styles:
             st.write(f"• {style}")
 
     with col5:
         st.subheader("⏰ Thời gian phù hợp")
-        for time in restaurant['suitable_time']:
+        for time in suitable_times:
             st.write(f"• {time}")
 
     # ----------------------
@@ -302,10 +249,11 @@ else:
     st.write("---")
     st.subheader("👥 Phù hợp với")
 
-    appropriate_cols = st.columns(len(restaurant['appropriate']))
-    for idx, app in enumerate(restaurant['appropriate']):
-        with appropriate_cols[idx]:
-            st.info(app)
+    if appropriate:
+        appropriate_cols = st.columns(len(appropriate))
+        for idx, app in enumerate(appropriate):
+            with appropriate_cols[idx]:
+                st.info(app)
 
     # ----------------------
     # USER RATING SECTION
@@ -313,7 +261,7 @@ else:
     st.write("---")
     st.subheader("⭐ Viết đánh giá của bạn")
 
-    with st.form(key=f"rating_form_{restaurant['id']}", clear_on_submit=True):
+    with st.form(key=f"rating_form_{rest_id}", clear_on_submit=True):
         col_name, col_rating = st.columns([3, 1])
 
         with col_name:
@@ -337,27 +285,20 @@ else:
                 st.error("⚠️ Vui lòng nhập bình luận")
             else:
                 with st.spinner("Đang lưu đánh giá..."):
-                    # Lưu comment
-                    success = add_comment(restaurant['id'], rating, comment_text.strip(), user_name.strip())
+                    success = add_review(
+                        user_id=st.session_state.user_id,
+                        username=user_name.strip(),
+                        review_text=comment_text.strip(),
+                        rating=rating,
+                        res_id=rest_id
+                    )
 
                     if success:
                         st.success("✅ Cảm ơn bạn đã đánh giá!")
-
-                        # Tự động phân tích comment
-                        if ANALYZER_AVAILABLE:
-                            try:
-                                # Run analyzer (silent mode)
-                                updated_prefs, _ = update_user_preferences(silent=True)
-
-                                # Hiển thị thông báo nếu có thay đổi
-                                if updated_prefs:
-                                    st.info("💡 Hệ thống đã học được sở thích của bạn từ đánh giá này!")
-                            except Exception as e:
-                                # Silent fail - không làm gián đoạn UX
-                                pass
-
+                        st.info("💡 Hệ thống đã học được sở thích của bạn từ đánh giá này!")
                         st.balloons()
                         time_module.sleep(1)
+                        st.cache_data.clear()
                         st.rerun()
                     else:
                         st.error("❌ Lỗi khi lưu đánh giá. Vui lòng thử lại!")
@@ -367,43 +308,46 @@ else:
     # ----------------------
     st.write("---")
 
-    # Lấy comments từ users và reviews từ Foody
-    user_comments = get_restaurant_comments(restaurant['id'])
-    foody_reviews = get_foody_reviews_by_restaurant(restaurant['id'])
+    # Get reviews from API
+    all_reviews = get_reviews(rest_id)
 
-    # Tổng số bình luận
-    total_reviews = len(user_comments) + len(foody_reviews)
+    # Separate user reviews and foody reviews
+    user_reviews = [r for r in all_reviews if r.get('source') == 'user']
+    foody_reviews = [r for r in all_reviews if r.get('source') == 'foody']
 
-    # Header với tabs
+    total_reviews = len(all_reviews)
+
+    # Header with tabs
     st.subheader("💬 Đánh giá & Bình luận")
 
     if total_reviews > 0:
         st.metric("Tổng đánh giá", total_reviews)
 
-        # Tabs để phân loại
+        # Tabs
         tab1, tab2 = st.tabs([
-            f"👥 Từ người dùng ({len(user_comments)})",
+            f"👥 Từ người dùng ({len(user_reviews)})",
             f"🍴 Từ Foody ({len(foody_reviews)})"
         ])
 
-        # Tab 1: User Comments
+        # Tab 1: User Reviews
         with tab1:
-            if user_comments:
-                for comment in user_comments:
+            if user_reviews:
+                for review in user_reviews:
                     with st.container(border=True):
-                        # Header: user và timestamp
+                        # Header
                         col_user, col_time = st.columns([2, 1])
                         with col_user:
-                            st.markdown(f"**👤 {comment['user']}**")
+                            st.markdown(f"**👤 {review.get('username', 'Anonymous')}**")
                         with col_time:
-                            st.caption(f"🕒 {comment['timestamp']}")
+                            st.caption(f"🕒 {review.get('timestamp', '')}")
 
-                        # Rating stars
-                        stars = "⭐" * comment['rating']
-                        st.markdown(f"### {stars} {comment['rating']}/10")
+                        # Rating
+                        rating_val = review.get('rating', 0)
+                        stars = "⭐" * int(rating_val)
+                        st.markdown(f"### {stars} {rating_val}/10")
 
-                        # Comment text
-                        st.write(comment['comment'])
+                        # Review text
+                        st.write(review.get('review_text', ''))
             else:
                 st.info("📝 Chưa có bình luận từ người dùng. Hãy là người đầu tiên!")
 
@@ -412,33 +356,29 @@ else:
             if foody_reviews:
                 for review in foody_reviews:
                     with st.container(border=True):
-                        # Header: user info
+                        # Header
                         col_user, col_time = st.columns([2, 1])
                         with col_user:
-                            # Link tới profile Foody
                             profile_url = review.get('profile_url', '#')
                             username = review.get('username', 'Anonymous')
                             st.markdown(f"**👤 [{username}]({profile_url})**")
                         with col_time:
-                            timestamp = review.get('timestamp', '')
-                            st.caption(f"🕒 {timestamp}")
+                            st.caption(f"🕒 {review.get('timestamp', '')}")
 
-                        # Rating (Foody dùng scale 10)
-                        rating = review.get('rating', 0)
-                        stars = "⭐" * int(rating)
-                        st.markdown(f"### {stars} {rating}/10")
+                        # Rating
+                        rating_val = review.get('rating', 0)
+                        stars = "⭐" * int(rating_val)
+                        st.markdown(f"### {stars} {rating_val}/10")
 
                         # Review text
                         review_text = review.get('review_text', '')
                         if len(review_text) > 300:
-                            # Truncate long reviews với expander
                             st.write(review_text[:300] + "...")
                             with st.expander("Đọc thêm"):
                                 st.write(review_text)
                         else:
                             st.write(review_text)
 
-                        # Badge nguồn
                         st.caption("📱 Nguồn: Foody.vn")
             else:
                 st.info("📝 Chưa có đánh giá từ Foody cho quán này.")
