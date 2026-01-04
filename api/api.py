@@ -13,7 +13,6 @@ CORS(app)
 basedir = os.path.abspath(os.path.dirname(__file__))
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(basedir, "database.db")}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'your-secret-key-here'
 
 db = SQLAlchemy(app)
 api = Api(app)
@@ -623,3 +622,4 @@ if __name__ == '__main__':
         print("API Server starting on http://localhost:5000\n")
     
     app.run(debug=True, host='0.0.0.0', port=5000)
+
